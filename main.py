@@ -1,88 +1,104 @@
-"""26 November 2026 news-image entry.
+"""Front-page delivery for the 26 November 2026 news image.
 
-The grader runs this file. It places the front page bundled with this
-repository (``entry.png``) into the output directory
-(``$MAKEFUN_OUTPUT_DIR``, default ``/output``) and then proves the
-placed file is the real thing: its PNG header must read 1024x1024 and
-its SHA-256 must equal the pinned digest of the bundled image.
+What this program does, when the grader runs it:
 
-Python standard library only. No network, no arguments, no randomness.
+1. Loads the bundled front page (``entry.png`` sitting next to this file).
+2. Checks it is a real, whole PNG: correct magic bytes, an IHDR chunk
+   declaring 1024x1024, and a closing IEND chunk.
+3. Checks its SHA-256 against the digest pinned below, so a damaged or
+   swapped image can never be reported as a success.
+4. Writes the exact bytes to ``$MAKEFUN_OUTPUT_DIR/entry.png``
+   (default ``/output``) and checks the written copy the same way.
+
+Only the Python standard library is used. There is no network access,
+no command-line parsing and no randomness: the same input always
+produces the same output file.
 """
 
 import hashlib
 import os
-import shutil
 import struct
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-BUNDLED = ROOT / "entry.png"
-OUT_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output")
-WANT_DIMS = (1024, 1024)
-# SHA-256 of entry.png as drawn on 2026-11-26. A damaged or swapped
-# bundled image is caught here before anything is reported as done.
-ENTRY_DIGEST = "3ca6d042d7104483f827aa1b6eda3b325f61fcd173ccf2a5a2eec9b832c13571"
+# The directory this file lives in, and the image bundled with it.
+HERE = Path(__file__).resolve().parent
+BUNDLED_IMAGE = HERE / "entry.png"
+
+# Where the finished image goes. The grader sets MAKEFUN_OUTPUT_DIR;
+# running by hand without it writes to /output.
+TARGET_DIR = Path(os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output")
+TARGET_NAME = "entry.png"
+
+# The page the generator drew on 2026-11-26: 1024x1024, 164,003 bytes.
+PAGE_WIDTH = 1024
+PAGE_HEIGHT = 1024
+PAGE_BYTES = 164003
+PAGE_SHA256 = "3ca6d042d7104483f827aa1b6eda3b325f61fcd173ccf2a5a2eec9b832c13571"
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+IEND_TAIL = b"IEND\xaeB`\x82"
 
 
-def digest_of(path):
-    """Hex SHA-256 of a file, read in 64 KiB chunks."""
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        while True:
-            chunk = fh.read(1 << 16)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
+class PageProblem(Exception):
+    """Raised when the bundled image fails any check."""
 
 
-def ihdr_dims(path):
-    """(width, height) from the PNG IHDR chunk, or None if not a PNG."""
-    with open(path, "rb") as fh:
-        head = fh.read(33)
-    if len(head) < 33 or head[:8] != b"\x89PNG\r\n\x1a\n":
-        return None
-    if head[12:16] != b"IHDR":
-        return None
-    return struct.unpack(">II", head[16:24])
+def sha256_hex(data):
+    """Hex digest of a bytes object."""
+    return hashlib.sha256(data).hexdigest()
 
 
-def digests_match(placed):
-    """True when both the placed copy and the bundle match the pinned digest."""
-    if digest_of(placed) != ENTRY_DIGEST:
-        print("placed copy digest mismatch", file=sys.stderr)
-        return False
-    if digest_of(BUNDLED) != ENTRY_DIGEST:
-        print("bundled image digest mismatch", file=sys.stderr)
-        return False
-    return True
+def check_png_bytes(data, label):
+    """Raise PageProblem unless data is a whole 1024x1024 PNG."""
+    if not data.startswith(PNG_MAGIC):
+        raise PageProblem(f"{label}: not a PNG (bad magic bytes)")
+    if len(data) < 33 or data[12:16] != b"IHDR":
+        raise PageProblem(f"{label}: no IHDR chunk where one belongs")
+    width, height = struct.unpack(">II", data[16:24])
+    if (width, height) != (PAGE_WIDTH, PAGE_HEIGHT):
+        raise PageProblem(
+            f"{label}: size {width}x{height}, want "
+            f"{PAGE_WIDTH}x{PAGE_HEIGHT}"
+        )
+    if not data.endswith(IEND_TAIL):
+        raise PageProblem(f"{label}: no IEND chunk at the end")
+    if len(data) != PAGE_BYTES:
+        raise PageProblem(
+            f"{label}: {len(data)} bytes, want {PAGE_BYTES}"
+        )
+    if sha256_hex(data) != PAGE_SHA256:
+        raise PageProblem(f"{label}: digest does not match the pinned one")
 
 
-def confirm_written(placed):
-    """True when the placed copy is a genuine 1024x1024 copy of the bundle.
+def deliver():
+    """Copy the bundled page to the output directory, verified twice."""
+    raw = BUNDLED_IMAGE.read_bytes()
+    check_png_bytes(raw, "bundled entry.png")
 
-    Header size first, then the digests, so a damaged bundle fails here too.
-    """
-    dims = ihdr_dims(placed)
-    if dims != WANT_DIMS:
-        print(f"bad size {dims}, expected {WANT_DIMS}", file=sys.stderr)
-        return False
-    return digests_match(placed)
+    TARGET_DIR.mkdir(parents=True, exist_ok=True)
+    destination = TARGET_DIR / TARGET_NAME
+    destination.write_bytes(raw)
 
-
-def place_entry():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    placed = OUT_DIR / "entry.png"
-    shutil.copyfile(BUNDLED, placed)
-
-    if not confirm_written(placed):
-        return 1
-
-    print(f"wrote {placed} ({placed.stat().st_size} bytes, "
-          f"{WANT_DIMS[0]}x{WANT_DIMS[1]})")
+    check_png_bytes(destination.read_bytes(), f"placed {destination}")
+    print(
+        f"wrote {destination} ({len(raw)} bytes, "
+        f"{PAGE_WIDTH}x{PAGE_HEIGHT})"
+    )
     return 0
 
 
+def main():
+    try:
+        return deliver()
+    except PageProblem as problem:
+        print(f"error: {problem}", file=sys.stderr)
+        return 1
+    except OSError as problem:
+        print(f"error: cannot read or write the image: {problem}",
+              file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    raise SystemExit(place_entry())
+    sys.exit(main())
