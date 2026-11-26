@@ -50,7 +50,13 @@ def sha256_hex(data):
 
 
 def check_png_bytes(data, label):
-    """Raise PageProblem unless data is a whole 1024x1024 PNG."""
+    """Raise PageProblem unless data is a whole 1024x1024 PNG.
+
+    Checks, in order: the magic bytes, the IHDR chunk and its declared
+    size, the closing IEND chunk, the total byte count and the digest.
+    The first failing check raises, so a truncated file and a swapped
+    file are told apart by the message.
+    """
     if not data.startswith(PNG_MAGIC):
         raise PageProblem(f"{label}: not a PNG (bad magic bytes)")
     if len(data) < 33 or data[12:16] != b"IHDR":
